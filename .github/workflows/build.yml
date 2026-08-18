@@ -18,7 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      # 1. 防止 Windows 检出时出现 CRLF 换行符报错
+      # 1. 强制 Git 检出为 LF 换行，防止 Prettier 在 Windows 触发错误
       - name: Configure Git Line Endings
         run: git config --global core.autocrlf false
 
@@ -31,7 +31,7 @@ jobs:
           node-version: '18.x'
           cache: 'yarn'
 
-      # 2. 移除 app/package.json 中的 "build" 属性，修复 macOS 上 electron-builder 报错
+      # 2. 清理 app/package.json 里的 illegal 'build' 字段，防止 electron-builder v3.0 崩溃
       - name: Fix app/package.json for electron-builder
         shell: bash
         run: |
@@ -45,36 +45,52 @@ jobs:
             }
           '
 
-      # 3. 安装根目录依赖（禁用 ESLint 强行中断）
-      - name: Install dependencies
-        run: yarn install --frozen-lockfile
+      # 3. 安装根目录依赖（跳过生命周期钩子，防止 postinstall 在提前阶段执行报错）
+      - name: Install root dependencies
+        run: yarn install --frozen-lockfile --ignore-scripts
         env:
           DISABLE_ESLINT_PLUGIN: 'true'
 
-      # 4. 补充缺失的 Babel 依赖
-      - name: Install missing build tool
-        run: yarn add -D @babel/plugin-proposal-private-property-in-object
+      # 4. 补全构建缺少的插件依赖，防止 CRACO / Webpack 构建卡死
+      - name: Install build tools
+        run: yarn add -D @babel/plugin-proposal-private-property-in-object eslint-webpack-plugin
 
-      # 5. 构建 React 前端 + 编译 TS 主进程
-      - name: Build Web App & Main Process
-        run: yarn react-build && yarn tsc-electron-build
+      # 5. 安装各目录全部依赖（显式执行 electron 依赖拉取）
+      - name: Install app dependencies & postinstall
+        run: |
+          npx electron-builder install-app-deps
+          cd app && yarn install
+
+      # 6. 执行完整前端编译 + Electron 主进程 TS 编译
+      - name: Build Web App & TS Main Process
+        run: |
+          yarn react-build
+          yarn tsc-electron-build
         env:
           DISABLE_ESLINT_PLUGIN: 'true'
           CI: false
           GENERATE_SOURCEMAP: false
 
-      # 6. 准备子目录 app 的依赖
-      - name: Prepare electron app dependencies
-        run: cd app && yarn install
+      # 7. 补充关键步：将主进程和根目录 build 产物同步/拷贝至 app 目录，解决入口文件缺失问题
+      - name: Sync build output to app folder
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs-extra");
+            if (fs.existsSync("build")) {
+              fs.copySync("build", "app/build");
+              console.log("Successfully synced build/ to app/build/");
+            }
+          '
 
-      # 7. 针对性调用 electron-builder，绝不同平台交叉打包
+      # 8. 针对性打包（严格隔离 Mac 与 Windows 参数）
       - name: Package Electron App
         run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: true
 
-      # 8. 上传产物
+      # 9. 上传安装包
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
