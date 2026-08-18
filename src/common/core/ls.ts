@@ -34,135 +34,6 @@ export interface LsResult {
   text: LsFiles[]
 }
 
-// ==================== PoW 算解 & Cookie 缓存逻辑 ====================
-
-let cachedAcwCookie = ''
-let acwCookieExpiresAt = 0
-
-/**
- * 根据 arg1 计算 acw_sc__v2 Cookie
- */
-export function calcAcwScV2(arg1: string): string {
-  const mask = [
-    15, 35, 29, 24, 33, 16, 1, 38, 10, 9, 19, 31, 40, 27, 22, 23, 25, 13, 6,
-    11, 39, 18, 20, 8, 14, 21, 32, 26, 2, 30, 7, 4, 17, 5, 3, 28, 34, 37, 12, 36,
-  ]
-  // 更新为最新的正确 Key 常量
-  const key = '3000176000856006061501533003690027800375'
-
-  const reordered: string[] = []
-  for (let i = 0; i < mask.length; i++) {
-    reordered[i] = arg1[mask[i] - 1]
-  }
-  const u = reordered.join('')
-
-  let acwScV2 = ''
-  for (let i = 0; i < u.length && i < key.length; i += 2) {
-    const num1 = parseInt(u.substring(i, i + 2), 16)
-    const num2 = parseInt(key.substring(i, i + 2), 16)
-    let xorHex = (num1 ^ num2).toString(16)
-    if (xorHex.length === 1) {
-      xorHex = '0' + xorHex
-    }
-    acwScV2 += xorHex
-  }
-
-  return acwScV2
-}
-
-/**
- * 更新全局缓存 Cookie
- */
-function updateAcwCookie(arg1: string) {
-  cachedAcwCookie = calcAcwScV2(arg1)
-  // Cookie 有效期设定为 55 分钟 (稍微小于 1 小时)
-  acwCookieExpiresAt = Date.now() + 55 * 60 * 1000
-}
-
-/**
- * 获取附带 acw_sc__v2 的 Headers 字典
- */
-function getAcwHeaders(headers: Record<string, string> = {}): Record<string, string> {
-  if (!cachedAcwCookie || Date.now() >= acwCookieExpiresAt) {
-    return { ...headers }
-  }
-
-  const cookieKey = Object.keys(headers).find(k => k.toLowerCase() === 'cookie') || 'cookie'
-  const existingCookie = headers[cookieKey]
-  const acwCookieStr = `acw_sc__v2=${cachedAcwCookie}`
-
-  return {
-    ...headers,
-    [cookieKey]: existingCookie ? `${existingCookie}; ${acwCookieStr}` : acwCookieStr,
-  }
-}
-
-/**
- * 带 PoW 验证防线的页面 GET 请求封装 (最多重试 3 次)
- */
-async function fetchSharePage(url: string, maxRetries = 3): Promise<{ html: string; finalUrl: string }> {
-  let retries = 0
-  let currentUrl = url
-
-  while (retries <= maxRetries) {
-    const instance = http.share.get(currentUrl, {
-      headers: getAcwHeaders(),
-    })
-    const response = await instance
-    currentUrl = response.url
-    const html = await instance.text()
-
-    const arg1Match = html.match(/var\s+arg1\s*=\s*['"]([^'"]+)['"]/)
-    if (arg1Match && arg1Match[1]) {
-      if (retries >= maxRetries) {
-        throw new Error('破墙失败：超出最大重试次数，仍返回 PoW 验证')
-      }
-      console.log("检测到 PoW 墙，正在尝试正经的计算以通过：", arg1Match[1])
-      updateAcwCookie(arg1Match[1])
-      retries++
-      await delay(300)
-      continue
-    }
-
-    return { html, finalUrl: currentUrl }
-  }
-
-  throw new Error('破墙失败：无法获取有效页面')
-}
-
-/**
- * 带 PoW 验证防线的 JSON API 请求封装 (最多重试 3 次)
- */
-async function requestJsonWithPow<T>(
-  makeRequest: (headers: Record<string, string>) => any,
-  maxRetries = 3
-): Promise<T> {
-  let retries = 0
-
-  while (retries <= maxRetries) {
-    const headers = getAcwHeaders()
-    const req = makeRequest(headers)
-    const rawText = await req.text()
-
-    const arg1Match = rawText.match(/var\s+arg1\s*=\s*['"]([^'"]+)['"]/)
-    if (arg1Match && arg1Match[1]) {
-      if (retries >= maxRetries) {
-        throw new Error('破墙失败：超出最大重试次数，仍返回 PoW 验证')
-      }
-      updateAcwCookie(arg1Match[1])
-      retries++
-      await delay(300)
-      continue
-    }
-
-    return JSON.parse(rawText) as T
-  }
-
-  throw new Error('破墙失败')
-}
-
-// ==================== 业务接口实现 ====================
-
 /**
  * 文件列表
  * @param folder_id
@@ -204,12 +75,11 @@ export async function lsFile(folder_id: FolderId) {
   let next = true
   const fileList: Task5Res['text'] = []
   do {
-    const {text} = await requestJsonWithPow<Task5Res>(headers =>
-      http.request.post(config.more.url?.replace(/^\//, ''), {
-        headers,
+    const {text} = await http.request
+      .post(config.more.url?.replace(/^\//, ''), {
         form: {task: 5, folder_id, pg: pg++, vei: config.more.data?.vei} as Task5,
       })
-    )
+      .json<Task5Res>()
     // todo: 蓝奏分页数量：api：18，分享页：50
     next = Array.isArray(text) && text.length >= 18
     if (Array.isArray(text)) {
@@ -225,12 +95,7 @@ export async function lsFile(folder_id: FolderId) {
  * cookie
  */
 export async function lsDir(folder_id: FolderId) {
-  return requestJsonWithPow<Task47Res>(headers =>
-    http.request.post('doupload.php', {
-      headers,
-      form: {task: 47, folder_id} as Task47,
-    })
-  )
+  return http.request.post('doupload.php', {form: {task: 47, folder_id} as Task47}).json<Task47Res>()
 }
 
 export interface LsShareObject {
@@ -257,9 +122,11 @@ export interface LsShareItem {
  * * 密码: #pwdload
  */
 export async function lsShare({url, pwd}: {url: string; pwd?: string}): Promise<LsShareObject> {
-  const pageRes = await fetchSharePage(url)
-  url = pageRes.finalUrl
-  const html = pageRes.html
+  const instance = http.share.get(url)
+  const response = await instance
+  const html = await instance.text()
+  // 覆盖原url（防url重定向）
+  url = response.url
 
   const $ = cheerio.load(html)
 
@@ -302,15 +169,14 @@ export async function lsShare({url, pwd}: {url: string; pwd?: string}): Promise<
   } else if (isPwdFile) {
     const ajaxData = await Matcher.parsePwdAjax(html, pwd)
 
-    const {inf} = await requestJsonWithPow<DownloadUrlRes>(headers =>
-      http.share(new URL(ajaxData.url, url), {
+    const {inf} = await http
+      .share(new URL(ajaxData.url, url), {
         method: ajaxData.type,
-        headers: {...headers, referer: url},
+        headers: {referer: url},
         form: ajaxData.data,
         context: {hideMessage: true},
       })
-    )
-
+      .json<DownloadUrlRes>()
     const name = inf // 文件名
     const size = $('meta[name=description]').attr('content').split('|')[0].replace('文件大小：', '')
     const time = $('.n_file_info > .n_file_infos:first-child').text()
@@ -342,9 +208,10 @@ export async function lsShare({url, pwd}: {url: string; pwd?: string}): Promise<
  */
 async function _lsShareFolder({url, pwd, html}: {url: string; pwd?: string; html?: string}) {
   if (!html) {
-    const pageRes = await fetchSharePage(url)
-    url = pageRes.finalUrl
-    html = pageRes.html
+    const instance = http.share.get(url)
+    const response = await instance
+    url = response.url
+    html = await instance.text()
   }
 
   const $ = cheerio.load(html)
@@ -356,14 +223,14 @@ async function _lsShareFolder({url, pwd, html}: {url: string; pwd?: string; html
   const shareFiles: ShareFile[] = []
 
   while (true) {
-    const {text} = await requestJsonWithPow<ShareFileRes>(headers =>
-      http.share(new URL(ajaxData.url, url), {
+    const {text} = await http
+      .share(new URL(ajaxData.url, url), {
         method: ajaxData.type,
-        headers: {...headers, referer: url},
+        headers: {referer: url},
         form: {...ajaxData.data, pg: pg++, pwd},
         context: {hideMessage: true},
       })
-    )
+      .json<ShareFileRes>()
 
     if (Array.isArray(text)) {
       shareFiles.push(...text)
