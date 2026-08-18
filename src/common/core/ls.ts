@@ -47,17 +47,18 @@ export function calcAcwScV2(arg1: string): string {
     15, 35, 29, 24, 33, 16, 1, 38, 10, 9, 19, 31, 40, 27, 22, 23, 25, 13, 6,
     11, 39, 18, 20, 8, 14, 21, 32, 26, 2, 30, 7, 4, 17, 5, 3, 28, 34, 37, 12, 36,
   ]
-  const key = '3000176008560060100113370014070010017010'
+  // 更新为最新的正确 Key 常量
+  const key = '3000176000856006061501533003690027800375'
 
   const reordered: string[] = []
   for (let i = 0; i < mask.length; i++) {
     reordered[i] = arg1[mask[i] - 1]
   }
-  const vLS = reordered.join('')
+  const u = reordered.join('')
 
   let acwScV2 = ''
-  for (let i = 0; i < vLS.length && i < key.length; i += 2) {
-    const num1 = parseInt(vLS.substring(i, i + 2), 16)
+  for (let i = 0; i < u.length && i < key.length; i += 2) {
+    const num1 = parseInt(u.substring(i, i + 2), 16)
     const num2 = parseInt(key.substring(i, i + 2), 16)
     let xorHex = (num1 ^ num2).toString(16)
     if (xorHex.length === 1) {
@@ -255,7 +256,6 @@ export interface LsShareItem {
  * * 密码: #pwdload
  */
 export async function lsShare({url, pwd}: {url: string; pwd?: string}): Promise<LsShareObject> {
-  // 使用自动处理 PoW 的 fetchSharePage 函数获取 html 和重定向后的 url
   const pageRes = await fetchSharePage(url)
   url = pageRes.finalUrl
   const html = pageRes.html
