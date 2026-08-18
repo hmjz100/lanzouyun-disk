@@ -117,6 +117,7 @@ async function fetchSharePage(url: string, maxRetries = 3): Promise<{ html: stri
       if (retries >= maxRetries) {
         throw new Error('破墙失败：超出最大重试次数，仍返回 PoW 验证')
       }
+      console.log("检测到 PoW 墙，正在尝试正经的计算以通过：", arg1Match[1])
       updateAcwCookie(arg1Match[1])
       retries++
       await delay(300)
