@@ -18,7 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      # 1. 阻止 Windows 检出代码时强行转 CRLF 换行
+      # 1. 阻止 Windows 检出代码时换行符变动
       - name: Configure Git Line Endings
         run: git config --global core.autocrlf false
 
@@ -31,7 +31,7 @@ jobs:
           node-version: '20.x'
           cache: 'yarn'
 
-      # 2. 清理 app/package.json 里的非法 'build' 节点，避免 electron-builder v3.0+ 报废掉
+      # 2. 修正 app/package.json：移除 build 节点并补全 repository 信息
       - name: Fix app/package.json for electron-builder
         shell: bash
         run: |
@@ -40,8 +40,17 @@ jobs:
             if (fs.existsSync("app/package.json")) {
               const pkg = JSON.parse(fs.readFileSync("app/package.json", "utf8"));
               delete pkg.build;
+              
+              // 自动从根目录继承或设置 repository 信息，避免发布检查报错
+              if (!pkg.repository) {
+                pkg.repository = {
+                  type: "git",
+                  url: "https://github.com/${{ github.repository }}.git"
+                };
+              }
+
               fs.writeFileSync("app/package.json", JSON.stringify(pkg, null, 2));
-              console.log("Successfully removed build field from app/package.json");
+              console.log("Successfully patched app/package.json");
             }
           '
 
@@ -51,7 +60,7 @@ jobs:
         env:
           DISABLE_ESLINT_PLUGIN: 'true'
 
-      # 4. 补全必要的 Babel 插件
+      # 4. 补全必要的 Babel 依赖
       - name: Install build tools
         run: yarn add -D @babel/plugin-proposal-private-property-in-object --ignore-engines
 
@@ -61,7 +70,7 @@ jobs:
           npx electron-builder install-app-deps
           cd app && yarn install
 
-      # 6. 执行前端编译 (输出到 build/) 并编译 TS 主进程 (输出到 build/main/ 或 app/build/)
+      # 6. 执行前端编译 (输出到 build/) 并编译 TS 主进程
       - name: Build Web App & TS Main Process
         run: |
           yarn react-build
@@ -71,31 +80,29 @@ jobs:
           CI: false
           GENERATE_SOURCEMAP: false
 
-      # 7. 关键步骤：同步根目录的构建产物到 app 目录，并确保目录结构符合 electron-builder 的预期
+      # 7. 同步构建产物到 app 目录
       - name: Sync build artifacts to app
         shell: bash
         run: |
           node -e '
             const fs = require("fs-extra");
-            // 将根目录 build 同步到 app/build
             if (fs.existsSync("build")) {
               fs.copySync("build", "app/build");
             }
-            // 确保 build/electron.js 或相关入口文件有兼容拷贝
             if (fs.existsSync("app/build/main/index.js") && !fs.existsSync("app/build/electron.js")) {
               fs.copySync("app/build/main/index.js", "app/build/electron.js");
             }
             console.log("Successfully prepared app/build files");
           '
 
-      # 8. 打包：指向 app 目录作为工程上下文进行打包
+      # 8. 打包：指向 app 目录，显式添加 --publish never 禁用自动发布检测
       - name: Package Electron App
-        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }} --projectDir=app -c.directories.output=../dist
+        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }} --projectDir=app -c.directories.output=../dist --publish never
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: true
 
-      # 9. 收集打包产物
+      # 9. 收集产物
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
