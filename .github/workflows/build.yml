@@ -28,7 +28,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18.x'
+          node-version: '20.x'
           cache: 'yarn'
 
       # 2. 清理 app/package.json 里的 illegal 'build' 字段，防止 electron-builder v3.0 崩溃
