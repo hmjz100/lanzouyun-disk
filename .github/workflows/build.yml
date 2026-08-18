@@ -9,55 +9,72 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+            target_platform: mac
             target_arch: --x64 --arm64
           - os: windows-latest
+            target_platform: win
             target_arch: --x64
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      # 强制 Git 检出文件时保持原始的 LF 换行符，防止 Prettier 在 Windows 上报错
+      # 1. 防止 Windows 检出时出现 CRLF 换行符报错
       - name: Configure Git Line Endings
         run: git config --global core.autocrlf false
 
       - name: Checkout Code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '18.x'
           cache: 'yarn'
 
-      # 构建过程中跳过 ESLint 语法拦截（推荐），并禁用 CI 严格失败机制
+      # 2. 移除 app/package.json 中的 "build" 属性，修复 macOS 上 electron-builder 报错
+      - name: Fix app/package.json for electron-builder
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            if (fs.existsSync("app/package.json")) {
+              const pkg = JSON.parse(fs.readFileSync("app/package.json", "utf8"));
+              delete pkg.build;
+              fs.writeFileSync("app/package.json", JSON.stringify(pkg, null, 2));
+              console.log("Successfully removed build field from app/package.json");
+            }
+          '
+
+      # 3. 安装根目录依赖（禁用 ESLint 强行中断）
       - name: Install dependencies
         run: yarn install --frozen-lockfile
         env:
           DISABLE_ESLINT_PLUGIN: 'true'
 
-      # 安装补充的 babel 依赖
+      # 4. 补充缺失的 Babel 依赖
       - name: Install missing build tool
         run: yarn add -D @babel/plugin-proposal-private-property-in-object
 
-      # 构建前端 React 产物及 Electron 主进程脚本
+      # 5. 构建 React 前端 + 编译 TS 主进程
       - name: Build Web App & Main Process
-        run: yarn build
+        run: yarn react-build && yarn tsc-electron-build
         env:
           DISABLE_ESLINT_PLUGIN: 'true'
           CI: false
+          GENERATE_SOURCEMAP: false
 
-      # 结合子目录 app 依赖重新拉取（针对 postinstall 逻辑）
+      # 6. 准备子目录 app 的依赖
       - name: Prepare electron app dependencies
         run: cd app && yarn install
 
-      # 执行 electron-builder 打包，按系统输出 x64 和 arm64 架构文件
+      # 7. 针对性调用 electron-builder，绝不同平台交叉打包
       - name: Package Electron App
-        run: npx electron-builder ${{ matrix.target_arch }}
+        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: true
 
-      # 上传生成的安装包/压缩包
+      # 8. 上传产物
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
