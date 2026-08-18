@@ -136,6 +136,8 @@ export async function lsShare({url, pwd}: {url: string; pwd?: string}): Promise<
   const isPwdFolder = !!$('#pwdload').length
   const isFolder = !!$('#filemore').length && !isPwdFolder // 密码和无密码页面
 
+  console.log("加载链接：", url, "\n文件：", isFile, "\n密码文件：", isPwdFile, "\n文件夹：", isFolder, "\n密码文件夹：", isPwdFolder, "\n链接返回：", html)
+
   if ((isPwdFile || isPwdFolder) && !pwd) {
     throw new Error('密码不能为空')
   }
