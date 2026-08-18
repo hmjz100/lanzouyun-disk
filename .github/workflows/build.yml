@@ -28,8 +28,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
-          cache: 'yarn'
+          node-version: "20.x"
+          cache: "yarn"
 
       # 2. 修正 app/package.json：将打包配置写入 pkg.build 并禁用 extends 预设
       - name: Patch app/package.json for electron-builder
@@ -39,7 +39,7 @@ jobs:
             const fs = require("fs");
             if (fs.existsSync("app/package.json")) {
               const pkg = JSON.parse(fs.readFileSync("app/package.json", "utf8"));
-              
+
               // 指定主进程入口
               pkg.main = "build/main/index.js";
 
@@ -70,7 +70,7 @@ jobs:
       - name: Install root dependencies
         run: yarn install --frozen-lockfile --ignore-scripts
         env:
-          DISABLE_ESLINT_PLUGIN: 'true'
+          DISABLE_ESLINT_PLUGIN: "true"
 
       # 4. 补全必要的 Babel 依赖
       - name: Install build tools
@@ -88,7 +88,7 @@ jobs:
           yarn react-build
           yarn tsc-electron-build
         env:
-          DISABLE_ESLINT_PLUGIN: 'true'
+          DISABLE_ESLINT_PLUGIN: "true"
           CI: false
           GENERATE_SOURCEMAP: false
 
@@ -121,7 +121,7 @@ jobs:
 
       # 8. 执行打包，传入 app 目录上下文
       - name: Package Electron App
-        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }} --projectDir=app -c.directories.output=../dist --publish never
+        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }} --projectDir=app --config.directories.output=../dist --publish never
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: true
