@@ -10,9 +10,11 @@ jobs:
         include:
           - os: macos-latest
             target_platform: mac
+            target_format: dmg zip
             target_arch: --x64 --arm64
           - os: windows-latest
             target_platform: win
+            target_format: zip
             target_arch: --x64
 
     runs-on: ${{ matrix.os }}
@@ -28,24 +30,25 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
-          cache: "yarn"
+          node-version: '20.x'
+          cache: 'yarn'
 
-      # 2. 修正 app/package.json：将打包配置写入 pkg.build 并禁用 extends 预设
+      # 2. 修正 app/package.json：将根目录 dependencies 同步合并至 app/package.json，解决依赖缺失报错
       - name: Patch app/package.json for electron-builder
         shell: bash
         run: |
           node -e '
             const fs = require("fs");
+            const rootPkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
             if (fs.existsSync("app/package.json")) {
-              const pkg = JSON.parse(fs.readFileSync("app/package.json", "utf8"));
+              const appPkg = JSON.parse(fs.readFileSync("app/package.json", "utf8"));
+              
+              appPkg.main = "build/main/index.js";
+              
+              // 合并根目录依赖到 app，确保 electron-updater 等能在运行阶段打包进 app/node_modules
+              appPkg.dependencies = Object.assign({}, rootPkg.dependencies, appPkg.dependencies);
 
-              // 指定主进程入口
-              pkg.main = "build/main/index.js";
-
-              // electron-builder 配置必须写入 pkg.build
-              // extends: null 用于禁用 preset=react-cra 的默认过滤规则
-              pkg.build = {
+              appPkg.build = {
                 extends: null,
                 files: [
                   "build/**/*",
@@ -53,16 +56,15 @@ jobs:
                 ]
               };
 
-              // 补全 repository 信息
-              if (!pkg.repository) {
-                pkg.repository = {
+              if (!appPkg.repository) {
+                appPkg.repository = {
                   type: "git",
                   url: "https://github.com/${{ github.repository }}.git"
                 };
               }
 
-              fs.writeFileSync("app/package.json", JSON.stringify(pkg, null, 2));
-              console.log("Successfully patched app/package.json:", JSON.stringify(pkg, null, 2));
+              fs.writeFileSync("app/package.json", JSON.stringify(appPkg, null, 2));
+              console.log("Successfully patched app/package.json with root dependencies.");
             }
           '
 
@@ -70,67 +72,53 @@ jobs:
       - name: Install root dependencies
         run: yarn install --frozen-lockfile --ignore-scripts
         env:
-          DISABLE_ESLINT_PLUGIN: "true"
+          DISABLE_ESLINT_PLUGIN: 'true'
 
       # 4. 补全必要的 Babel 依赖
       - name: Install build tools
         run: yarn add -D @babel/plugin-proposal-private-property-in-object --ignore-engines
 
-      # 5. 安装子目录 app 的依赖
+      # 5. 安装子目录 app 的全量运行依赖
       - name: Install app dependencies
         run: |
-          npx electron-builder install-app-deps
           cd app && yarn install
+          npx electron-builder install-app-deps
 
-      # 6. 执行前端编译 (产物到 app/build) 并编译 TS 主进程 (产物到 build/main)
+      # 6. 执行前端编译 (产物到 app/build) 并编译 TS 主进程
       - name: Build Web App & TS Main Process
         run: |
           yarn react-build
           yarn tsc-electron-build
         env:
-          DISABLE_ESLINT_PLUGIN: "true"
+          DISABLE_ESLINT_PLUGIN: 'true'
           CI: false
           GENERATE_SOURCEMAP: false
 
-      # 7. 确保根目录编译的 main 产物正确同步合并到 app/build 中，并检验入口文件
-      - name: Sync and verify build artifacts
+      # 7. 同步构建产物到 app 目录
+      - name: Sync build artifacts to app
         shell: bash
         run: |
           node -e '
             const fs = require("fs");
-            const path = require("path");
-
-            if (!fs.existsSync("app/build")) {
-              fs.mkdirSync("app/build", { recursive: true });
-            }
-
-            // 若根目录 build/ 存在 (tsc 编译出的 main)，合并入 app/build/
             if (fs.existsSync("build")) {
               fs.cpSync("build", "app/build", { recursive: true });
-              console.log("Synced root build/ -> app/build/");
-            }
-
-            const entry = path.join("app", "build", "main", "index.js");
-            if (fs.existsSync(entry)) {
-              console.log("Verified entry file exists:", entry);
-            } else {
-              console.error("Entry file missing at:", entry);
-              process.exit(1);
+              console.log("Successfully copied build/ to app/build/");
             }
           '
 
-      # 8. 执行打包，传入 app 目录上下文
+      # 8. 执行打包，传入指定的 target_format (如 win zip)
       - name: Package Electron App
-        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }} --projectDir=app --config.directories.output=../dist --publish never
+        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_format }} ${{ matrix.target_arch }} --projectDir=app --config.directories.output=../dist --publish never
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: true
 
       # 9. 收集打包产物
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lanzouyun-disk-${{ matrix.os }}
+          compression-level: 9
           path: |
             dist/*.dmg
             dist/*.zip
