@@ -18,7 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      # 1. 强制 Git 检出为 LF 换行，防止 Prettier 在 Windows 触发错误
+      # 1. 阻止 Windows 检出代码时强行转 CRLF 换行
       - name: Configure Git Line Endings
         run: git config --global core.autocrlf false
 
@@ -31,7 +31,7 @@ jobs:
           node-version: '20.x'
           cache: 'yarn'
 
-      # 2. 清理 app/package.json 里的 illegal 'build' 字段，防止 electron-builder v3.0 崩溃
+      # 2. 清理 app/package.json 里的非法 'build' 节点，避免 electron-builder v3.0+ 报废掉
       - name: Fix app/package.json for electron-builder
         shell: bash
         run: |
@@ -45,23 +45,23 @@ jobs:
             }
           '
 
-      # 3. 安装根目录依赖（跳过生命周期钩子，防止 postinstall 在提前阶段执行报错）
+      # 3. 安装根目录依赖
       - name: Install root dependencies
         run: yarn install --frozen-lockfile --ignore-scripts
         env:
           DISABLE_ESLINT_PLUGIN: 'true'
 
-      # 4. 补全构建缺少的插件依赖，防止 CRACO / Webpack 构建卡死
+      # 4. 补全必要的 Babel 插件
       - name: Install build tools
-        run: yarn add -D @babel/plugin-proposal-private-property-in-object eslint-webpack-plugin
+        run: yarn add -D @babel/plugin-proposal-private-property-in-object --ignore-engines
 
-      # 5. 安装各目录全部依赖（显式执行 electron 依赖拉取）
-      - name: Install app dependencies & postinstall
+      # 5. 安装子目录 app 的依赖
+      - name: Install app dependencies
         run: |
           npx electron-builder install-app-deps
           cd app && yarn install
 
-      # 6. 执行完整前端编译 + Electron 主进程 TS 编译
+      # 6. 执行前端编译 (输出到 build/) 并编译 TS 主进程 (输出到 build/main/ 或 app/build/)
       - name: Build Web App & TS Main Process
         run: |
           yarn react-build
@@ -71,26 +71,31 @@ jobs:
           CI: false
           GENERATE_SOURCEMAP: false
 
-      # 7. 补充关键步：将主进程和根目录 build 产物同步/拷贝至 app 目录，解决入口文件缺失问题
-      - name: Sync build output to app folder
+      # 7. 关键步骤：同步根目录的构建产物到 app 目录，并确保目录结构符合 electron-builder 的预期
+      - name: Sync build artifacts to app
         shell: bash
         run: |
           node -e '
             const fs = require("fs-extra");
+            // 将根目录 build 同步到 app/build
             if (fs.existsSync("build")) {
               fs.copySync("build", "app/build");
-              console.log("Successfully synced build/ to app/build/");
             }
+            // 确保 build/electron.js 或相关入口文件有兼容拷贝
+            if (fs.existsSync("app/build/main/index.js") && !fs.existsSync("app/build/electron.js")) {
+              fs.copySync("app/build/main/index.js", "app/build/electron.js");
+            }
+            console.log("Successfully prepared app/build files");
           '
 
-      # 8. 针对性打包（严格隔离 Mac 与 Windows 参数）
+      # 8. 打包：指向 app 目录作为工程上下文进行打包
       - name: Package Electron App
-        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }}
+        run: npx electron-builder --${{ matrix.target_platform }} ${{ matrix.target_arch }} --projectDir=app -c.directories.output=../dist
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: true
 
-      # 9. 上传安装包
+      # 9. 收集打包产物
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
