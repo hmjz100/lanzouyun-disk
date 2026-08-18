@@ -31,7 +31,7 @@ jobs:
           node-version: '20.x'
           cache: 'yarn'
 
-      # 2. 修正 app/package.json：移除 build 节点，配置入口、打包文件列表及 repository
+      # 2. 修正 app/package.json：将打包配置写入 pkg.build 并禁用 extends 预设
       - name: Patch app/package.json for electron-builder
         shell: bash
         run: |
@@ -39,11 +39,19 @@ jobs:
             const fs = require("fs");
             if (fs.existsSync("app/package.json")) {
               const pkg = JSON.parse(fs.readFileSync("app/package.json", "utf8"));
-              delete pkg.build;
               
-              // 显式指定入口与文件包含规则（防止 electron-builder 默认过滤掉 build 目录）
+              // 指定主进程入口
               pkg.main = "build/main/index.js";
-              pkg.files = ["build/**/*"];
+
+              // electron-builder 配置必须写入 pkg.build
+              // extends: null 用于禁用 preset=react-cra 的默认过滤规则
+              pkg.build = {
+                extends: null,
+                files: [
+                  "build/**/*",
+                  "package.json"
+                ]
+              };
 
               // 补全 repository 信息
               if (!pkg.repository) {
@@ -54,7 +62,7 @@ jobs:
               }
 
               fs.writeFileSync("app/package.json", JSON.stringify(pkg, null, 2));
-              console.log("Successfully patched app/package.json:", pkg);
+              console.log("Successfully patched app/package.json:", JSON.stringify(pkg, null, 2));
             }
           '
 
@@ -74,7 +82,7 @@ jobs:
           npx electron-builder install-app-deps
           cd app && yarn install
 
-      # 6. 执行前端编译 (输出到 build/) 并编译 TS 主进程
+      # 6. 执行前端编译 (产物到 app/build) 并编译 TS 主进程 (产物到 build/main)
       - name: Build Web App & TS Main Process
         run: |
           yarn react-build
@@ -84,15 +92,30 @@ jobs:
           CI: false
           GENERATE_SOURCEMAP: false
 
-      # 7. 原生同步构建产物到 app 目录
-      - name: Sync build artifacts to app
+      # 7. 确保根目录编译的 main 产物正确同步合并到 app/build 中，并检验入口文件
+      - name: Sync and verify build artifacts
         shell: bash
         run: |
           node -e '
             const fs = require("fs");
+            const path = require("path");
+
+            if (!fs.existsSync("app/build")) {
+              fs.mkdirSync("app/build", { recursive: true });
+            }
+
+            // 若根目录 build/ 存在 (tsc 编译出的 main)，合并入 app/build/
             if (fs.existsSync("build")) {
               fs.cpSync("build", "app/build", { recursive: true });
-              console.log("Successfully copied build/ to app/build/");
+              console.log("Synced root build/ -> app/build/");
+            }
+
+            const entry = path.join("app", "build", "main", "index.js");
+            if (fs.existsSync(entry)) {
+              console.log("Verified entry file exists:", entry);
+            } else {
+              console.error("Entry file missing at:", entry);
+              process.exit(1);
             }
           '
 
@@ -103,7 +126,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: true
 
-      # 9. 收集产物
+      # 9. 收集打包产物
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
